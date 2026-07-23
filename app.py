@@ -336,7 +336,27 @@ if not check_password():
 
 # --- 3. FIREBASE INITIALIZATION ---
 if not firebase_admin._apps:
-    cred = credentials.Certificate("serviceAccountkey.json")
+    import streamlit as st
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# Initialize Firebase using Streamlit Secrets
+if not firebase_admin._apps:
+    try:
+        # Convert Streamlit TOML secrets into a Python dictionary
+        key_dict = dict(st.secrets["firebase"])
+        
+        # Handle newlines in private key if formatted as a single string
+        if "private_key" in key_dict:
+            key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+            
+        cred = credentials.Certificate(key_dict)
+        firebase_admin.initialize_app(cred)
+    except Exception as e:
+        st.error(f"Failed to connect to Firebase: {e}")
+
+# Connect to Firestore database
+db = firestore.client()
     firebase_admin.initialize_app(cred, {
         "storageBucket": "ring-fence-funds.firebasestorage.app"
     })
