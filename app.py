@@ -1,9 +1,6 @@
 """
 ELECTRIC WIRE & CABLE — SALES + PRODUCTION + INVENTORY PORTAL
-A single-file Streamlit application for Coppermils covering:
-• Public storefront with product features, gauge details, and price cards
-• Sidebar quick-product selector & custom CSS contrast fixes
-• Customer records, Production entry, Raw material stock, Scrap tracking, & Analytics
+Coppermils ERP Portal
 """
 
 import streamlit as st
@@ -16,7 +13,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # ------------------------------------------------------------------------------------
-# 0. APP CONFIG & LIGHT-THEME STYLING FIX
+# 0. APP CONFIG & GLOBAL THEME FIX
 # ------------------------------------------------------------------------------------
 BUSINESS_NAME = "Coppermils"
 CURRENCY = "PKR"
@@ -24,51 +21,37 @@ DB_FILE = "wire_cable_erp.db"
 
 st.set_page_config(page_title=f"{BUSINESS_NAME} — Portal", layout="wide", page_icon="⚡")
 
-# Custom CSS to force clean contrast for dark/light themes and style product cards
+# Direct CSS Injection to override Streamlit Dark Mode input styles completely
 st.markdown("""
     <style>
-    /* Force high contrast light inputs so text is crisp and clear */
-    div[data-baseweb="input"] > div, div[data-baseweb="select"] > div {
-        background-color: #ffffff !important;
-        color: #111111 !important;
-        border: 1px solid #cccccc !important;
-        border-radius: 6px !important;
+    /* Force input backgrounds to light gray/white with dark text */
+    div[data-baseweb="input"] input, 
+    div[data-baseweb="select"] div,
+    textarea {
+        background-color: #FFFFFF !important;
+        color: #000000 !important;
+        border: 1px solid #CCCCCC !important;
     }
-    input {
-        color: #111111 !important;
+    div[data-baseweb="base-input"] {
+        background-color: #FFFFFF !important;
+    }
+    .stSelectbox > div > div {
+        background-color: #FFFFFF !important;
+        color: #000000 !important;
     }
     
-    /* Product Card Styling */
-    .product-card {
-        background-color: #ffffff;
-        border: 1px solid #e0e0e0;
-        border-radius: 10px;
-        padding: 18px;
+    /* Clean Card Styling */
+    .product-box {
+        border: 2px solid #1F4E78;
+        border-radius: 8px;
+        padding: 15px;
+        background-color: #F8F9FA;
         margin-bottom: 15px;
-        box-shadow: 0px 3px 6px rgba(0,0,0,0.05);
-    }
-    .product-title {
-        font-size: 18px;
-        font-weight: bold;
-        color: #1F4E78;
-    }
-    .product-badge {
-        background-color: #e6f0ff;
-        color: #0056b3;
-        padding: 3px 8px;
-        border-radius: 4px;
-        font-size: 12px;
-        font-weight: 600;
-    }
-    .product-price {
-        font-size: 18px;
-        font-weight: bold;
-        color: #27ae60;
     }
     </style>
 """, unsafe_allow_html=True)
 
-# Running Marquee Banner with Contact Numbers
+# Banner
 MARQUEE_TEXT = "Quality Matters for contact 0333-4534668, 03214562502"
 st.markdown(
     f"""
@@ -82,15 +65,13 @@ st.markdown(
 )
 
 # ------------------------------------------------------------------------------------
-# 1. DATABASE SETUP & INITIALIZATION
+# 1. DATABASE INIT & AUTO-RESEED LOGIC
 # ------------------------------------------------------------------------------------
 def init_db():
-    """Ensure all required tables and default data exist with Gauge & Features."""
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
-    # Raw Materials
     c.execute('''CREATE TABLE IF NOT EXISTS raw_materials (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         category TEXT,
@@ -101,7 +82,6 @@ def init_db():
         min_threshold REAL DEFAULT 0
     )''')
 
-    # Finished Product Catalog (Includes Gauge and Features)
     c.execute('''CREATE TABLE IF NOT EXISTS products (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         code TEXT UNIQUE,
@@ -114,15 +94,14 @@ def init_db():
         stock_qty REAL DEFAULT 0
     )''')
 
-    # Migration check: Ensure gauge and features columns exist if database was pre-created
+    # Migration check for existing databases
     c.execute("PRAGMA table_info(products)")
-    columns = [col[1] for col in c.fetchall()]
-    if 'gauge' not in columns:
+    cols = [col[1] for col in c.fetchall()]
+    if 'gauge' not in cols:
         c.execute("ALTER TABLE products ADD COLUMN gauge TEXT DEFAULT ''")
-    if 'features' not in columns:
+    if 'features' not in cols:
         c.execute("ALTER TABLE products ADD COLUMN features TEXT DEFAULT ''")
 
-    # Customers
     c.execute('''CREATE TABLE IF NOT EXISTS customers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT,
@@ -131,7 +110,6 @@ def init_db():
         address TEXT
     )''')
 
-    # Orders
     c.execute('''CREATE TABLE IF NOT EXISTS orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         order_date TEXT,
@@ -147,7 +125,6 @@ def init_db():
         status TEXT DEFAULT 'Pending'
     )''')
 
-    # Production Log
     c.execute('''CREATE TABLE IF NOT EXISTS production_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         prod_date TEXT,
@@ -165,7 +142,6 @@ def init_db():
         scrap_pvc_kg REAL DEFAULT 0
     )''')
 
-    # Staff Records
     c.execute('''CREATE TABLE IF NOT EXISTS staff (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT,
@@ -173,7 +149,6 @@ def init_db():
         phone TEXT
     )''')
 
-    # Scrap Tracker
     c.execute('''CREATE TABLE IF NOT EXISTS scrap_inventory (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         material_type TEXT UNIQUE,
@@ -182,7 +157,20 @@ def init_db():
 
     conn.commit()
 
-    # Seed Default Raw Materials
+    # Seed products if table is empty or all stock is 0
+    c.execute("SELECT COUNT(*) FROM products WHERE stock_qty > 0")
+    if c.fetchone()[0] == 0:
+        c.execute("DELETE FROM products")
+        prods = [
+            ("CBL-3070", "3/070 Single Core Copper Wire", "Building Wire", "3/0.029 (0.7mm)", "99.9% Pure Copper, Flame Retardant PVC", "Coil (90m)", 4500.0, 120.0),
+            ("CBL-7029", "7/029 Single Core Copper Wire", "Building Wire", "7/0.029 (0.7mm)", "High Conductivity, Heavy Duty Insulation", "Coil (90m)", 8200.0, 85.0),
+            ("CBL-7036", "7/036 Heavy Duty Copper Cable", "Building Wire", "7/0.036 (0.9mm)", "Pure Electrolytic Copper, High Heat Resistance", "Coil (90m)", 11500.0, 60.0),
+            ("CBL-7044", "7/044 Commercial Power Cable", "Power Cable", "7/0.044 (1.1mm)", "Commercial Grade, Weather Resistant Outer Sheath", "Coil (90m)", 16800.0, 40.0),
+            ("CBL-2C-7029", "2-Core 7/029 Flexible Twin Cable", "Twin Core", "7/0.029 Dual", "Double Layer PVC Insulated Flexible Wire", "Coil (90m)", 15500.0, 30.0),
+            ("CBL-3C-4MM", "3-Core 4mm XLPE Armored Cable", "Industrial", "4.0 sq mm", "XLPE Insulation, High Voltage Heavy Industrial", "Meter", 680.0, 500.0)
+        ]
+        c.executemany("INSERT INTO products (code, name, category, gauge, features, unit, unit_price, stock_qty) VALUES (?,?,?,?,?,?,?,?)", prods)
+
     c.execute("SELECT COUNT(*) FROM raw_materials")
     if c.fetchone()[0] == 0:
         raw_items = [
@@ -196,20 +184,6 @@ def init_db():
         ]
         c.executemany("INSERT OR IGNORE INTO raw_materials (category, item_name, grade, unit, stock_qty, min_threshold) VALUES (?,?,?,?,?,?)", raw_items)
 
-    # Seed Default Products with Gauge & Features
-    c.execute("SELECT COUNT(*) FROM products")
-    if c.fetchone()[0] == 0:
-        prods = [
-            ("CBL-3070", "3/070 Single Core Copper Wire", "Building Wire", "3/0.029 (0.7mm)", "99.9% Pure Copper, Flame Retardant PVC", "Coil (90m)", 4500.0, 120.0),
-            ("CBL-7029", "7/029 Single Core Copper Wire", "Building Wire", "7/0.029 (0.7mm)", "High Conductivity, Heavy Duty Insulation", "Coil (90m)", 8200.0, 85.0),
-            ("CBL-7036", "7/036 Heavy Duty Copper Cable", "Building Wire", "7/0.036 (0.9mm)", "Pure Electrolytic Copper, High Heat Resistance", "Coil (90m)", 11500.0, 60.0),
-            ("CBL-7044", "7/044 Commercial Power Cable", "Power Cable", "7/0.044 (1.1mm)", "Commercial Grade, Weather Resistant Outer Sheath", "Coil (90m)", 16800.0, 40.0),
-            ("CBL-2C-7029", "2-Core 7/029 Flexible Twin Cable", "Twin Core", "7/0.029 Dual", "Double Layer PVC Insulated Flexible Wire", "Coil (90m)", 15500.0, 30.0),
-            ("CBL-3C-4MM", "3-Core 4mm XLPE Armored Cable", "Industrial", "4.0 sq mm", "XLPE Insulation, High Voltage Heavy Industrial", "Meter", 680.0, 500.0)
-        ]
-        c.executemany("INSERT OR IGNORE INTO products (code, name, category, gauge, features, unit, unit_price, stock_qty) VALUES (?,?,?,?,?,?,?,?)", prods)
-
-    # Seed Scrap
     c.execute("SELECT COUNT(*) FROM scrap_inventory")
     if c.fetchone()[0] == 0:
         c.executemany("INSERT OR IGNORE INTO scrap_inventory (material_type, stock_kg) VALUES (?,?)", [
@@ -296,7 +270,7 @@ def generate_excel_report():
     return output
 
 # ------------------------------------------------------------------------------------
-# 3. SIDEBAR NAVIGATION & QUICK PRODUCT SELECTOR
+# 3. SIDEBAR NAVIGATION & QUICK PRODUCT SELECT
 # ------------------------------------------------------------------------------------
 st.sidebar.title(f"⚡ {BUSINESS_NAME}")
 
@@ -320,18 +294,18 @@ st.sidebar.subheader("🎯 Quick Product Select")
 all_p = load_data("SELECT code, name FROM products")
 if not all_p.empty:
     prod_map = {f"{row['code']} - {row['name']}": row['code'] for _, row in all_p.iterrows()}
-    sidebar_selected = st.sidebar.selectbox("Jump to Product Order:", ["-- Choose Product --"] + list(prod_map.keys()))
+    sidebar_selected = st.sidebar.selectbox("Choose Product to Order:", ["-- Choose Product --"] + list(prod_map.keys()))
     if sidebar_selected != "-- Choose Product --":
         st.session_state["selected_product"] = prod_map[sidebar_selected]
 
 # ------------------------------------------------------------------------------------
-# MODULE 1: STOREFRONT (PUBLIC / NO LOGIN)
+# MODULE 1: STOREFRONT
 # ------------------------------------------------------------------------------------
 if nav_choice == "🛍️ Storefront (Place Order)":
     st.title("🛒 Public Storefront — Product Catalog & Ordering")
-    st.caption("Browse available wire & cable gauges, features, and place instant orders.")
+    st.caption("Browse wire & cable specifications, prices, gauge details, and place orders.")
 
-    df_p = load_data("SELECT code, name, category, gauge, features, unit, unit_price, stock_qty FROM products WHERE stock_qty > 0")
+    df_p = load_data("SELECT code, name, category, gauge, features, unit, unit_price, stock_qty FROM products")
 
     col_cat, col_search = st.columns([1, 2])
     with col_cat:
@@ -353,37 +327,27 @@ if nav_choice == "🛍️ Storefront (Place Order)":
     st.subheader("Available Cable & Wire Stock")
 
     if filtered_df.empty:
-        st.info("No matching products found or stock empty.")
+        st.warning("No products found.")
     else:
-        # Render clean cards showing Gauge, Features, Price, and Stock
+        # Render clean, visible product cards using Streamlit native containers
         for idx, row in filtered_df.iterrows():
-            st.markdown(f"""
-            <div class="product-card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span class="product-title">{row['name']} ({row['code']})</span>
-                    <span class="product-badge">{row['category']}</span>
-                </div>
-                <div style="margin-top: 8px; color: #444444; font-size: 14px;">
-                    📐 <b>Gauge / Thickness:</b> {row['gauge'] if row['gauge'] else 'Standard'} | 
-                    🏷️ <b>Unit:</b> {row['unit']}
-                </div>
-                <div style="margin-top: 4px; color: #555555; font-size: 14px;">
-                    ✨ <b>Key Features:</b> {row['features'] if row['features'] else 'High Performance Wire'}
-                </div>
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
-                    <span class="product-price">{CURRENCY} {row['unit_price']:,.2f} / {row['unit']}</span>
-                    <span style="color: #666666; font-size: 13px;">📦 Stock: <b>{row['stock_qty']}</b> {row['unit']}</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            with st.container():
+                st.markdown(f"### 🔌 {row['name']} (`{row['code']}`)")
+                c1, c2, c3 = st.columns([2, 2, 1])
+                with c1:
+                    st.write(f"**Category:** {row['category']}")
+                    st.write(f"**Gauge / Specification:** `{row['gauge'] if row['gauge'] else 'N/A'}`")
+                with c2:
+                    st.write(f"**Price:** {CURRENCY} {row['unit_price']:,.2f} / {row['unit']}")
+                    st.write(f"**In Stock:** {row['stock_qty']} {row['unit']}")
+                with c3:
+                    if st.button(f"🛒 Order {row['code']}", key=f"btn_{row['code']}"):
+                        st.session_state["selected_product"] = row['code']
 
-            if st.button(f"🛒 Select {row['code']} for Order", key=f"btn_{row['code']}"):
-                st.session_state["selected_product"] = row['code']
-                st.toast(f"Selected {row['code']} in order form below!")
+                st.info(f"**Key Features:** {row['features'] if row['features'] else 'Standard Duty Electric Wire'}")
+                st.divider()
 
-            st.markdown("<br>", unsafe_allow_html=True)
-
-    # Order Placement Form
+    # Order Form
     st.subheader("📝 Place Your Order")
     with st.form("public_order_form"):
         prod_codes = list(df_p["code"]) if not df_p.empty else []
@@ -440,11 +404,11 @@ if nav_choice == "🛍️ Storefront (Place Order)":
 
                         execute_query("UPDATE products SET stock_qty = stock_qty - ? WHERE code = ?", (f_qty, f_code))
 
-                        st.success(f"🎉 Order placed successfully! Total: {CURRENCY} {tot_amt:,.2f}. We will contact you shortly.")
+                        st.success(f"🎉 Order placed successfully! Total: {CURRENCY} {tot_amt:,.2f}.")
                         st.rerun()
 
 # ------------------------------------------------------------------------------------
-# MODULE 2: FINISHED PRODUCT CATALOG
+# MODULE 2: PRODUCT CATALOG
 # ------------------------------------------------------------------------------------
 elif nav_choice == "📦 Finished Product Catalog":
     st.title("📦 Product Catalog & Spec Manager")
@@ -491,7 +455,7 @@ elif nav_choice == "📦 Finished Product Catalog":
             c_features = st.text_area("Features (e.g. 99.9% Pure Copper, Heat Resistant PVC)")
             c_unit = st.selectbox("Unit of Measure", ["Coil (90m)", "Meter", "Roll", "Km"])
             c_price = st.number_input("Unit Price", min_value=0.0, step=10.0)
-            c_stock = st.number_input("Initial Stock Qty", min_value=0.0, step=1.0)
+            c_stock = st.number_input("Initial Stock Qty", min_value=0.0, step=10.0)
 
             if st.form_submit_button("Add Product"):
                 if not c_code or not c_name:
@@ -526,7 +490,7 @@ elif nav_choice == "🏭 Production Entry":
     prod_options = [f"{row['code']} - {row['name']}" for _, row in df_prods.iterrows()] if not df_prods.empty else []
 
     with st.form("production_entry_form"):
-        st.subheader("1. General & Staff Details")
+        st.subheader("1. Staff Details")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             p_date = st.date_input("Production Date", date.today())
@@ -596,7 +560,7 @@ elif nav_choice == "🏭 Production Entry":
                 if scrap_pvc > 0:
                     execute_query("UPDATE scrap_inventory SET stock_kg = stock_kg + ? WHERE material_type = 'PVC Scrap'", (scrap_pvc,))
 
-                st.success("✅ Production batch successfully logged!")
+                st.success("✅ Production batch logged!")
                 st.rerun()
 
     st.subheader("📜 Recent Production Batches")
@@ -616,7 +580,7 @@ elif nav_choice == "🧱 Raw Material Inventory":
     if not df_raw.empty:
         for idx, row in df_raw.iterrows():
             if row["stock_qty"] <= row["min_threshold"]:
-                st.warning(f"⚠️ Low Stock Alert: {row['item_name']} ({row['category']}) is at {row['stock_qty']} {row['unit']} (Threshold: {row['min_threshold']})")
+                st.warning(f"⚠️ Low Stock Alert: {row['item_name']} ({row['category']}) is at {row['stock_qty']} {row['unit']}")
 
         st.dataframe(df_raw, use_container_width=True)
 
@@ -639,7 +603,7 @@ elif nav_choice == "🧱 Raw Material Inventory":
         with st.form("new_raw_material_form"):
             r_cat = st.selectbox("Material Category", ["Copper", "PVC", "XLPE", "Aluminium", "Other"])
             r_name = st.text_input("Material Description / Name")
-            r_grade = st.text_input("Grade (e.g., Pure, Loose Gauge, China, Insulation, Sheathing)")
+            r_grade = st.text_input("Grade")
             r_unit = st.text_input("Unit of Measure", "Kg")
             r_stock = st.number_input("Initial Stock Qty", min_value=0.0, step=10.0)
             r_thresh = st.number_input("Min Alert Threshold", min_value=0.0, step=10.0)
