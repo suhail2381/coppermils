@@ -46,13 +46,10 @@ st.markdown(
 # ------------------------------------------------------------------------------------
 # 1. DATABASE SETUP & INITIALIZATION
 # ------------------------------------------------------------------------------------
-def get_db_connection():
+def init_db():
+    """Ensure all required tables and default data exist."""
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    return conn
-
-def init_db():
-    conn = get_db_connection()
     c = conn.cursor()
 
     # Raw Materials Inventory
@@ -175,8 +172,12 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ALWAYS initialize the DB tables upfront on every app run
-init_db()
+def get_db_connection():
+    # Always ensure DB and tables exist before connecting
+    init_db()
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 # ------------------------------------------------------------------------------------
 # 2. HELPER FUNCTIONS
@@ -185,10 +186,9 @@ def load_data(query, params=()):
     conn = get_db_connection()
     try:
         df = pd.read_sql_query(query, conn, params=params)
-    except Exception:
-        # Re-initialize DB if table was somehow missing and retry
-        init_db()
-        df = pd.read_sql_query(query, conn, params=params)
+    except Exception as e:
+        # Fallback empty dataframe matching structure if anything goes wrong
+        df = pd.DataFrame()
     finally:
         conn.close()
     return df
@@ -204,7 +204,6 @@ def generate_excel_report():
     output = io.BytesIO()
     wb = openpyxl.Workbook()
     
-    # Setup styles
     header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
     center_align = Alignment(horizontal="center", vertical="center")
@@ -216,24 +215,27 @@ def generate_excel_report():
     ws_prod.title = "Finished Products Stock"
     df_p = load_data("SELECT code, name, category, unit, unit_price, stock_qty FROM products")
     ws_prod.append(["Product Code", "Product Name", "Category", "Unit", f"Price ({CURRENCY})", "Stock Qty"])
-    for row in df_p.itertuples(index=False):
-        ws_prod.append(list(row))
+    if not df_p.empty:
+        for row in df_p.itertuples(index=False):
+            ws_prod.append(list(row))
 
     # 2. Raw Material Sheet
     ws_raw = wb.create_sheet("Raw Material Inventory")
     df_r = load_data("SELECT category, item_name, grade, unit, stock_qty, min_threshold FROM raw_materials")
     ws_raw.append(["Category", "Item Name", "Grade", "Unit", "Current Stock", "Min Threshold"])
-    for row in df_r.itertuples(index=False):
-        ws_raw.append(list(row))
+    if not df_r.empty:
+        for row in df_r.itertuples(index=False):
+            ws_raw.append(list(row))
 
     # 3. Sales Sheet
     ws_sales = wb.create_sheet("Sales Orders")
     df_s = load_data("SELECT id, order_date, customer_name, customer_phone, city, product_name, quantity, unit_price, total_amount, status FROM orders")
     ws_sales.append(["Order ID", "Date", "Customer Name", "Phone", "City", "Product", "Qty", f"Price ({CURRENCY})", f"Total ({CURRENCY})", "Status"])
-    for row in df_s.itertuples(index=False):
-        ws_sales.append(list(row))
+    if not df_s.empty:
+        for row in df_s.itertuples(index=False):
+            ws_sales.append(list(row))
 
-    # Apply formatting across all sheets
+    # Apply formatting
     for ws in wb.worksheets:
         for cell in ws[1]:
             cell.font = header_font
@@ -287,13 +289,14 @@ if nav_choice == "🛍️ Storefront (Place Order)":
         search_term = st.text_input("Search Product Name or Code", "")
 
     filtered_df = df_p.copy()
-    if sel_cat != "All Categories":
-        filtered_df = filtered_df[filtered_df["category"] == sel_cat]
-    if search_term:
-        filtered_df = filtered_df[
-            filtered_df["name"].str.contains(search_term, case=False, na=False) |
-            filtered_df["code"].str.contains(search_term, case=False, na=False)
-        ]
+    if not filtered_df.empty:
+        if sel_cat != "All Categories":
+            filtered_df = filtered_df[filtered_df["category"] == sel_cat]
+        if search_term:
+            filtered_df = filtered_df[
+                filtered_df["name"].str.contains(search_term, case=False, na=False) |
+                filtered_df["code"].str.contains(search_term, case=False, na=False)
+            ]
 
     st.subheader("Available Cable & Wire Stock")
     
@@ -324,7 +327,7 @@ if nav_choice == "🛍️ Storefront (Place Order)":
         if "selected_product" in st.session_state and st.session_state["selected_product"] in prod_codes:
             default_index = prod_codes.index(st.session_state["selected_product"])
 
-        f_code = st.selectbox("Select Product Code", prod_codes, index=default_index if prod_codes else 0)
+        f_code = st.selectbox("Select Product Code", prod_codes if prod_codes else ["No Products Available"], index=default_index if prod_codes else 0)
         f_qty = st.number_input("Quantity Required", min_value=1.0, value=1.0, step=1.0)
 
         st.markdown("---")
@@ -342,6 +345,8 @@ if nav_choice == "🛍️ Storefront (Place Order)":
         if submit_order:
             if not c_name or not c_phone or not c_city:
                 st.error("Please fill in Name, Phone, and City fields.")
+            elif not prod_codes or f_code == "No Products Available":
+                st.error("No product selected.")
             else:
                 p_info = load_data("SELECT name, unit_price, stock_qty FROM products WHERE code = ?", (f_code,))
                 if p_info.empty:
@@ -438,18 +443,15 @@ elif nav_choice == "🏭 Production Entry":
     st.title("🏭 Daily Production & Manufacturing Log")
     st.caption("Record wire extrusion and processing output, staff involvement, raw material consumption, and scrap generation.")
 
-    # Staff options
     df_staff = load_data("SELECT name, role FROM staff")
     managers = df_staff[df_staff["role"] == "Production Manager"]["name"].tolist() if not df_staff.empty else ["Default Manager"]
     supervisors = df_staff[df_staff["role"] == "Supervisor"]["name"].tolist() if not df_staff.empty else ["Default Supervisor"]
     labourers = df_staff[df_staff["role"] == "Labour"]["name"].tolist() if not df_staff.empty else ["Default Labour"]
 
-    # Raw material options
     df_raw = load_data("SELECT item_name, grade, category FROM raw_materials")
     copper_items = df_raw[df_raw["category"] == "Copper"]["item_name"].tolist() if not df_raw.empty else ["Copper Rod - Pure (99.9%)"]
     pvc_items = df_raw[df_raw["category"] == "PVC"]["item_name"].tolist() if not df_raw.empty else ["PVC Compound - Insulation Grade"]
 
-    # Products options
     df_prods = load_data("SELECT code, name FROM products")
     prod_options = [f"{row['code']} - {row['name']}" for _, row in df_prods.iterrows()] if not df_prods.empty else []
 
@@ -495,14 +497,13 @@ elif nav_choice == "🏭 Production Entry":
         submit_prod = st.form_submit_button("🏭 Log Production Batch")
 
         if submit_prod:
-            if not prod_options:
+            if not prod_options or sel_prod_str == "No products":
                 st.error("Please register products first.")
             elif out_qty <= 0:
                 st.error("Output quantity must be greater than zero.")
             else:
                 p_code = sel_prod_str.split(" - ")[0]
 
-                # Log Production Entry
                 execute_query(
                     """INSERT INTO production_log 
                        (prod_date, manager_name, supervisor_name, labour_name, product_code, output_qty,
@@ -513,16 +514,13 @@ elif nav_choice == "🏭 Production Entry":
                      cop_used, cop_type, pvc_used, pvc_type, rej_qty, scrap_cop, scrap_pvc)
                 )
 
-                # Increase Finished Product Stock
                 execute_query("UPDATE products SET stock_qty = stock_qty + ? WHERE code = ?", (out_qty, p_code))
 
-                # Deduct Raw Materials Stock
                 if cop_used > 0:
                     execute_query("UPDATE raw_materials SET stock_qty = stock_qty - ? WHERE item_name = ?", (cop_used, cop_type))
                 if pvc_used > 0:
                     execute_query("UPDATE raw_materials SET stock_qty = stock_qty - ? WHERE item_name = ?", (pvc_used, pvc_type))
 
-                # Update Scrap Stock
                 if scrap_cop > 0:
                     execute_query("UPDATE scrap_inventory SET stock_kg = stock_kg + ? WHERE material_type = 'Copper Scrap'", (scrap_cop,))
                 if scrap_pvc > 0:
@@ -545,27 +543,27 @@ elif nav_choice == "🧱 Raw Material Inventory":
     df_raw = load_data("SELECT * FROM raw_materials")
 
     st.subheader("Current Stock Levels")
-    
-    # Highlight low stock
-    for idx, row in df_raw.iterrows():
-        if row["stock_qty"] <= row["min_threshold"]:
-            st.warning(f"⚠️ Low Stock Alert: {row['item_name']} ({row['category']}) is at {row['stock_qty']} {row['unit']} (Threshold: {row['min_threshold']})")
+    if not df_raw.empty:
+        for idx, row in df_raw.iterrows():
+            if row["stock_qty"] <= row["min_threshold"]:
+                st.warning(f"⚠️ Low Stock Alert: {row['item_name']} ({row['category']}) is at {row['stock_qty']} {row['unit']} (Threshold: {row['min_threshold']})")
 
-    st.dataframe(df_raw, use_container_width=True)
+        st.dataframe(df_raw, use_container_width=True)
 
     tab1, tab2 = st.tabs(["📥 Adjust / Add Raw Stock", "➕ Register New Material"])
 
     with tab1:
-        col_item, col_add = st.columns(2)
-        with col_item:
-            sel_item = st.selectbox("Select Material to Update", df_raw["item_name"].tolist())
-        with col_add:
-            add_qty = st.number_input("Quantity Received / Added (Kg)", step=10.0)
+        if not df_raw.empty:
+            col_item, col_add = st.columns(2)
+            with col_item:
+                sel_item = st.selectbox("Select Material to Update", df_raw["item_name"].tolist())
+            with col_add:
+                add_qty = st.number_input("Quantity Received / Added (Kg)", step=10.0)
 
-        if st.button("Add to Stock"):
-            execute_query("UPDATE raw_materials SET stock_qty = stock_qty + ? WHERE item_name = ?", (add_qty, sel_item))
-            st.success(f"Added {add_qty} Kg to {sel_item}")
-            st.rerun()
+            if st.button("Add to Stock"):
+                execute_query("UPDATE raw_materials SET stock_qty = stock_qty + ? WHERE item_name = ?", (add_qty, sel_item))
+                st.success(f"Added {add_qty} Kg to {sel_item}")
+                st.rerun()
 
     with tab2:
         with st.form("new_raw_material_form"):
@@ -600,47 +598,50 @@ elif nav_choice == "♻️ Scrap Tracking":
     df_scrap = load_data("SELECT * FROM scrap_inventory")
     
     col_c, col_p = st.columns(2)
-    for idx, row in df_scrap.iterrows():
-        if "Copper" in row["material_type"]:
-            with col_c:
-                st.metric(label="🟤 Copper Scrap Balance", value=f"{row['stock_kg']:,.2f} Kg")
-        else:
-            with col_p:
-                st.metric(label="⚪ PVC Scrap Balance", value=f"{row['stock_kg']:,.2f} Kg")
+    if not df_scrap.empty:
+        for idx, row in df_scrap.iterrows():
+            if "Copper" in row["material_type"]:
+                with col_c:
+                    st.metric(label="🟤 Copper Scrap Balance", value=f"{row['stock_kg']:,.2f} Kg")
+            else:
+                with col_p:
+                    st.metric(label="⚪ PVC Scrap Balance", value=f"{row['stock_kg']:,.2f} Kg")
 
     st.subheader("Manage Scrap Stock")
     tab1, tab2 = st.tabs(["📝 Manual Adjustment", "💵 Sell / Dispose Scrap"])
 
     with tab1:
-        col1, col2 = st.columns(2)
-        with col1:
-            scrap_sel = st.selectbox("Select Scrap Material", df_scrap["material_type"].tolist())
-        with col2:
-            adj_qty = st.number_input("Quantity Difference (+ or - Kg)", step=1.0)
+        if not df_scrap.empty:
+            col1, col2 = st.columns(2)
+            with col1:
+                scrap_sel = st.selectbox("Select Scrap Material", df_scrap["material_type"].tolist())
+            with col2:
+                adj_qty = st.number_input("Quantity Difference (+ or - Kg)", step=1.0)
 
-        if st.button("Apply Adjustment"):
-            execute_query("UPDATE scrap_inventory SET stock_kg = stock_kg + ? WHERE material_type = ?", (adj_qty, scrap_sel))
-            st.success("Scrap balance updated!")
-            st.rerun()
+            if st.button("Apply Adjustment"):
+                execute_query("UPDATE scrap_inventory SET stock_kg = stock_kg + ? WHERE material_type = ?", (adj_qty, scrap_sel))
+                st.success("Scrap balance updated!")
+                st.rerun()
 
     with tab2:
-        col_s1, col_s2, col_s3 = st.columns(3)
-        with col_s1:
-            sell_type = st.selectbox("Scrap Type Sold", df_scrap["material_type"].tolist(), key="sell_type")
-        with col_s2:
-            sell_qty = st.number_input("Quantity Sold (Kg)", min_value=0.0, step=1.0)
-        with col_s3:
-            sell_rate = st.number_input(f"Rate Per Kg ({CURRENCY})", min_value=0.0, step=10.0)
+        if not df_scrap.empty:
+            col_s1, col_s2, col_s3 = st.columns(3)
+            with col_s1:
+                sell_type = st.selectbox("Scrap Type Sold", df_scrap["material_type"].tolist(), key="sell_type")
+            with col_s2:
+                sell_qty = st.number_input("Quantity Sold (Kg)", min_value=0.0, step=1.0)
+            with col_s3:
+                sell_rate = st.number_input(f"Rate Per Kg ({CURRENCY})", min_value=0.0, step=10.0)
 
-        if st.button("Record Scrap Sale"):
-            curr_stock = df_scrap[df_scrap["material_type"] == sell_type].iloc[0]["stock_kg"]
-            if sell_qty > curr_stock:
-                st.error("Sale quantity exceeds existing scrap balance.")
-            else:
-                total_rev = sell_qty * sell_rate
-                execute_query("UPDATE scrap_inventory SET stock_kg = stock_kg - ? WHERE material_type = ?", (sell_qty, sell_type))
-                st.success(f"Recorded sale of {sell_qty} Kg {sell_type} for total {CURRENCY} {total_rev:,.2f}!")
-                st.rerun()
+            if st.button("Record Scrap Sale"):
+                curr_stock = df_scrap[df_scrap["material_type"] == sell_type].iloc[0]["stock_kg"]
+                if sell_qty > curr_stock:
+                    st.error("Sale quantity exceeds existing scrap balance.")
+                else:
+                    total_rev = sell_qty * sell_rate
+                    execute_query("UPDATE scrap_inventory SET stock_kg = stock_kg - ? WHERE material_type = ?", (sell_qty, sell_type))
+                    st.success(f"Recorded sale of {sell_qty} Kg {sell_type} for total {CURRENCY} {total_rev:,.2f}!")
+                    st.rerun()
 
 # ------------------------------------------------------------------------------------
 # MODULE 6: SALES ORDERS MANAGEMENT
@@ -735,10 +736,9 @@ elif nav_choice == "📊 Reports & Analytics":
     df_prod = load_data("SELECT * FROM production_log")
     df_raw = load_data("SELECT * FROM raw_materials")
 
-    # Top KPI Cards
-    tot_sales = df_orders[df_orders["status"] != "Cancelled"]["total_amount"].sum() if not df_orders.empty else 0.0
+    tot_sales = df_orders[df_orders["status"] != "Cancelled"]["total_amount"].sum() if not df_orders.empty and "total_amount" in df_orders.columns else 0.0
     tot_orders = len(df_orders) if not df_orders.empty else 0
-    tot_prod_qty = df_prod["output_qty"].sum() if not df_prod.empty else 0.0
+    tot_prod_qty = df_prod["output_qty"].sum() if not df_prod.empty and "output_qty" in df_prod.columns else 0.0
 
     kpi1, kpi2, kpi3 = st.columns(3)
     kpi1.metric("💰 Total Revenue", f"{CURRENCY} {tot_sales:,.2f}")
@@ -751,7 +751,7 @@ elif nav_choice == "📊 Reports & Analytics":
 
     with col_chart1:
         st.subheader("Sales by Product")
-        if not df_orders.empty:
+        if not df_orders.empty and "product_name" in df_orders.columns:
             sales_by_p = df_orders.groupby("product_name")["total_amount"].sum().reset_index()
             fig1 = px.bar(sales_by_p, x="product_name", y="total_amount", labels={"total_amount": f"Revenue ({CURRENCY})", "product_name": "Product"}, title="Revenue per Product")
             st.plotly_chart(fig1, use_container_width=True)
@@ -760,7 +760,7 @@ elif nav_choice == "📊 Reports & Analytics":
 
     with col_chart2:
         st.subheader("Raw Material Stock Levels")
-        if not df_raw.empty:
+        if not df_raw.empty and "item_name" in df_raw.columns:
             fig2 = px.pie(df_raw, names="item_name", values="stock_qty", title="Raw Material Composition")
             st.plotly_chart(fig2, use_container_width=True)
         else:
