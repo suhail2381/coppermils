@@ -149,7 +149,7 @@ def init_db():
             ("XLPE", "XLPE Compound - High Voltage", "HV", "Kg", 400.0, 40.0),
             ("Aluminium", "Aluminium Wire Rod", "Standard", "Kg", 600.0, 60.0)
         ]
-        c.executemany("INSERT INTO raw_materials (category, item_name, grade, unit, stock_qty, min_threshold) VALUES (?,?,?,?,?,?)", raw_items)
+        c.executemany("INSERT OR IGNORE INTO raw_materials (category, item_name, grade, unit, stock_qty, min_threshold) VALUES (?,?,?,?,?,?)", raw_items)
 
     # Insert default Products if empty
     c.execute("SELECT COUNT(*) FROM products")
@@ -162,12 +162,12 @@ def init_db():
             ("CBL-2C-7029", "2-Core 7/029 Flexible Twin Wire", "Twin Core", "Coil (90m)", 15500.0, 30.0),
             ("CBL-3C-4MM", "3-Core 4mm XLPE Power Cable", "Industrial", "Meter", 680.0, 500.0)
         ]
-        c.executemany("INSERT INTO products (code, name, category, unit, unit_price, stock_qty) VALUES (?,?,?,?,?,?)", prods)
+        c.executemany("INSERT OR IGNORE INTO products (code, name, category, unit, unit_price, stock_qty) VALUES (?,?,?,?,?,?)", prods)
 
     # Insert default Scrap types if empty
     c.execute("SELECT COUNT(*) FROM scrap_inventory")
     if c.fetchone()[0] == 0:
-        c.executemany("INSERT INTO scrap_inventory (material_type, stock_kg) VALUES (?,?)", [
+        c.executemany("INSERT OR IGNORE INTO scrap_inventory (material_type, stock_kg) VALUES (?,?)", [
             ("Copper Scrap", 0.0),
             ("PVC Scrap", 0.0)
         ])
@@ -175,6 +175,7 @@ def init_db():
     conn.commit()
     conn.close()
 
+# ALWAYS initialize the DB tables upfront on every app run
 init_db()
 
 # ------------------------------------------------------------------------------------
@@ -182,8 +183,14 @@ init_db()
 # ------------------------------------------------------------------------------------
 def load_data(query, params=()):
     conn = get_db_connection()
-    df = pd.read_sql_query(query, conn, params=params)
-    conn.close()
+    try:
+        df = pd.read_sql_query(query, conn, params=params)
+    except Exception:
+        # Re-initialize DB if table was somehow missing and retry
+        init_db()
+        df = pd.read_sql_query(query, conn, params=params)
+    finally:
+        conn.close()
     return df
 
 def execute_query(query, params=()):
