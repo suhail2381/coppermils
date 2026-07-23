@@ -1,6 +1,9 @@
 """
 ELECTRIC WIRE & CABLE — SALES + PRODUCTION + INVENTORY PORTAL
-Coppermils ERP Portal
+A single-file Streamlit application for Coppermils covering:
+• Public storefront displaying Coppermils 3D Box Packaging for all products
+• Auto-seeded wire gauges from official product list (Copper & Aluminium)
+• Customer records, Production entry, Raw material stock, Scrap tracking, & Analytics
 """
 
 import streamlit as st
@@ -13,7 +16,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # ------------------------------------------------------------------------------------
-# 0. APP CONFIG & GLOBAL THEME FIX
+# 0. APP CONFIG & LIGHT-THEME STYLING FIX
 # ------------------------------------------------------------------------------------
 BUSINESS_NAME = "Coppermils"
 CURRENCY = "PKR"
@@ -21,37 +24,94 @@ DB_FILE = "wire_cable_erp.db"
 
 st.set_page_config(page_title=f"{BUSINESS_NAME} — Portal", layout="wide", page_icon="⚡")
 
-# Direct CSS Injection to override Streamlit Dark Mode input styles completely
+# Custom CSS for UI contrast and 3D Product Box Packaging
 st.markdown("""
     <style>
-    /* Force input backgrounds to light gray/white with dark text */
-    div[data-baseweb="input"] input, 
-    div[data-baseweb="select"] div,
-    textarea {
-        background-color: #FFFFFF !important;
-        color: #000000 !important;
-        border: 1px solid #CCCCCC !important;
+    /* Input Styling */
+    div[data-baseweb="input"] > div, div[data-baseweb="select"] > div {
+        background-color: #ffffff !important;
+        color: #111111 !important;
+        border: 1px solid #cccccc !important;
+        border-radius: 6px !important;
     }
-    div[data-baseweb="base-input"] {
-        background-color: #FFFFFF !important;
-    }
-    .stSelectbox > div > div {
-        background-color: #FFFFFF !important;
-        color: #000000 !important;
+    input {
+        color: #111111 !important;
     }
     
-    /* Clean Card Styling */
-    .product-box {
-        border: 2px solid #1F4E78;
-        border-radius: 8px;
-        padding: 15px;
-        background-color: #F8F9FA;
-        margin-bottom: 15px;
+    /* Title Styling */
+    .custom-main-title {
+        font-size: 32px !important;
+        font-weight: bold !important;
+        color: #1F4E78 !important;
+        margin-bottom: 5px !important;
+    }
+
+    /* 3D Box Packaging Card Styling */
+    .box-card-container {
+        background-color: #ffffff;
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 25px;
+        box-shadow: 0px 4px 15px rgba(0,0,0,0.08);
+        border: 1px solid #e2e8f0;
+    }
+
+    .package-box {
+        background: linear-gradient(135deg, #111111 0%, #1f2937 100%);
+        border: 2px solid #d97706;
+        border-radius: 10px;
+        padding: 16px;
+        color: #ffffff;
+        position: relative;
+        box-shadow: 5px 8px 15px rgba(0,0,0,0.3);
+        margin-bottom: 10px;
+    }
+
+    .package-box-header {
+        font-size: 20px;
+        font-weight: 900;
+        letter-spacing: 1px;
+        color: #f59e0b;
+        border-bottom: 1px solid #374151;
+        padding-bottom: 5px;
+        margin-bottom: 10px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .pure-seal {
+        background-color: #d97706;
+        color: #000000;
+        font-size: 10px;
+        font-weight: bold;
+        padding: 3px 6px;
+        border-radius: 50px;
+        text-transform: uppercase;
+    }
+
+    .package-gauge {
+        font-size: 22px;
+        font-weight: 800;
+        color: #ffffff;
+        margin-bottom: 5px;
+    }
+
+    .package-specs {
+        font-size: 12px;
+        color: #9ca3af;
+        line-height: 1.4;
+    }
+
+    .product-price {
+        font-size: 19px;
+        font-weight: bold;
+        color: #27ae60;
     }
     </style>
 """, unsafe_allow_html=True)
 
-# Banner
+# Running Marquee Banner with Contact Numbers
 MARQUEE_TEXT = "Quality Matters for contact 0333-4534668, 03214562502"
 st.markdown(
     f"""
@@ -65,13 +125,15 @@ st.markdown(
 )
 
 # ------------------------------------------------------------------------------------
-# 1. DATABASE INIT & AUTO-RESEED LOGIC
+# 1. DATABASE SETUP & INITIALIZATION
 # ------------------------------------------------------------------------------------
 def init_db():
+    """Ensure all required tables and default data exist with Gauge & Features."""
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
+    # Raw Materials
     c.execute('''CREATE TABLE IF NOT EXISTS raw_materials (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         category TEXT,
@@ -82,6 +144,7 @@ def init_db():
         min_threshold REAL DEFAULT 0
     )''')
 
+    # Finished Product Catalog
     c.execute('''CREATE TABLE IF NOT EXISTS products (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         code TEXT UNIQUE,
@@ -94,14 +157,7 @@ def init_db():
         stock_qty REAL DEFAULT 0
     )''')
 
-    # Migration check for existing databases
-    c.execute("PRAGMA table_info(products)")
-    cols = [col[1] for col in c.fetchall()]
-    if 'gauge' not in cols:
-        c.execute("ALTER TABLE products ADD COLUMN gauge TEXT DEFAULT ''")
-    if 'features' not in cols:
-        c.execute("ALTER TABLE products ADD COLUMN features TEXT DEFAULT ''")
-
+    # Customers
     c.execute('''CREATE TABLE IF NOT EXISTS customers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT,
@@ -110,6 +166,7 @@ def init_db():
         address TEXT
     )''')
 
+    # Orders
     c.execute('''CREATE TABLE IF NOT EXISTS orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         order_date TEXT,
@@ -125,6 +182,7 @@ def init_db():
         status TEXT DEFAULT 'Pending'
     )''')
 
+    # Production Log
     c.execute('''CREATE TABLE IF NOT EXISTS production_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         prod_date TEXT,
@@ -142,6 +200,7 @@ def init_db():
         scrap_pvc_kg REAL DEFAULT 0
     )''')
 
+    # Staff Records
     c.execute('''CREATE TABLE IF NOT EXISTS staff (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT,
@@ -149,6 +208,7 @@ def init_db():
         phone TEXT
     )''')
 
+    # Scrap Tracker
     c.execute('''CREATE TABLE IF NOT EXISTS scrap_inventory (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         material_type TEXT UNIQUE,
@@ -157,33 +217,43 @@ def init_db():
 
     conn.commit()
 
-    # Seed products if table is empty or all stock is 0
-    c.execute("SELECT COUNT(*) FROM products WHERE stock_qty > 0")
-    if c.fetchone()[0] == 0:
-        c.execute("DELETE FROM products")
-        prods = [
-            ("CBL-3070", "3/070 Single Core Copper Wire", "Building Wire", "3/0.029 (0.7mm)", "99.9% Pure Copper, Flame Retardant PVC", "Coil (90m)", 4500.0, 120.0),
-            ("CBL-7029", "7/029 Single Core Copper Wire", "Building Wire", "7/0.029 (0.7mm)", "High Conductivity, Heavy Duty Insulation", "Coil (90m)", 8200.0, 85.0),
-            ("CBL-7036", "7/036 Heavy Duty Copper Cable", "Building Wire", "7/0.036 (0.9mm)", "Pure Electrolytic Copper, High Heat Resistance", "Coil (90m)", 11500.0, 60.0),
-            ("CBL-7044", "7/044 Commercial Power Cable", "Power Cable", "7/0.044 (1.1mm)", "Commercial Grade, Weather Resistant Outer Sheath", "Coil (90m)", 16800.0, 40.0),
-            ("CBL-2C-7029", "2-Core 7/029 Flexible Twin Cable", "Twin Core", "7/0.029 Dual", "Double Layer PVC Insulated Flexible Wire", "Coil (90m)", 15500.0, 30.0),
-            ("CBL-3C-4MM", "3-Core 4mm XLPE Armored Cable", "Industrial", "4.0 sq mm", "XLPE Insulation, High Voltage Heavy Industrial", "Meter", 680.0, 500.0)
-        ]
-        c.executemany("INSERT INTO products (code, name, category, gauge, features, unit, unit_price, stock_qty) VALUES (?,?,?,?,?,?,?,?)", prods)
-
+    # Seed Default Raw Materials
     c.execute("SELECT COUNT(*) FROM raw_materials")
     if c.fetchone()[0] == 0:
         raw_items = [
             ("Copper", "Copper Rod - Pure (99.9%)", "99.9%", "Kg", 500.0, 50.0),
             ("Copper", "Copper Rod - Loose Gauge", "Loose", "Kg", 300.0, 30.0),
-            ("Copper", "Copper Wire - China Grade", "China", "Kg", 200.0, 20.0),
             ("PVC", "PVC Compound - Insulation Grade", "Insulation", "Kg", 1000.0, 100.0),
-            ("PVC", "PVC Compound - Sheathing Grade", "Sheathing", "Kg", 800.0, 80.0),
-            ("XLPE", "XLPE Compound - High Voltage", "HV", "Kg", 400.0, 40.0),
             ("Aluminium", "Aluminium Wire Rod", "Standard", "Kg", 600.0, 60.0)
         ]
         c.executemany("INSERT OR IGNORE INTO raw_materials (category, item_name, grade, unit, stock_qty, min_threshold) VALUES (?,?,?,?,?,?)", raw_items)
 
+    # Seed Wire Gauges (Copper & Aluminium)
+    c.execute("SELECT COUNT(*) FROM products")
+    if c.fetchone()[0] == 0:
+        prods = [
+            # Copper Products
+            ("CU-0329", "03/29 Single Core Copper Wire", "Copper Wire", "03/29 SWG", "99.99% Pure Copper, PVC Power Cable, Control Cable", "Coil (90m)", 4500.0, 100.0),
+            ("CU-0729", "07/29 Single Core Copper Wire", "Copper Wire", "07/29 SWG", "99.99% Pure Copper, Heavy Duty Insulation", "Coil (90m)", 8200.0, 85.0),
+            ("CU-0736", "07/36 Heavy Duty Copper Cable", "Copper Wire", "07/36 SWG", "Pure Electrolytic Copper, High Heat Resistance", "Coil (90m)", 11500.0, 60.0),
+            ("CU-0744", "07/44 Power Cable", "Copper Wire", "07/44 SWG", "Commercial Grade, Weather Resistant Outer Sheath", "Coil (90m)", 16800.0, 40.0),
+            ("CU-0752", "07/52 Industrial Copper Cable", "Copper Wire", "07/52 SWG", "Heavy Duty Power Cable, XLPE Compatible", "Coil (90m)", 21000.0, 35.0),
+            ("CU-0764", "07/64 Heavy Power Copper Cable", "Copper Wire", "07/64 SWG", "High Current Capacity, Pure Copper Core", "Coil (90m)", 28500.0, 25.0),
+            ("CU-2376", "23/76 Flexible Copper Wire", "Copper Wire", "23/76 SWG", "Flexible Twin Core, Fine Stranded Wire", "Coil (90m)", 6500.0, 90.0),
+            ("CU-4076", "40/76 Flexible Power Copper Cable", "Copper Wire", "40/76 SWG", "High Flexibility, Appliance & Power Extension", "Coil (90m)", 9800.0, 75.0),
+            
+            # Aluminium Products
+            ("AL-0736-2C", "7/36 Twin Core Aluminium Cable", "Aluminium Wire", "7/36 SWG Twin Core", "PVC Sheathed Twin Core Aluminium Cable", "Coil (90m)", 3200.0, 50.0),
+            ("AL-0744-2C", "7/44 Twin Core Aluminium Cable", "Aluminium Wire", "7/44 SWG Twin Core", "Twin Core Overhead Service Cable", "Coil (90m)", 4100.0, 45.0),
+            ("AL-0752-2C", "7/52 Twin Core Aluminium Cable", "Aluminium Wire", "7/52 SWG Twin Core", "Commercial Wiring Aluminium Cable", "Coil (90m)", 5300.0, 40.0),
+            ("AL-0764-2C", "7/64 Twin Core Aluminium Cable", "Aluminium Wire", "7/64 SWG Twin Core", "Heavy Service Twin Core Line", "Coil (90m)", 6800.0, 30.0),
+            ("AL-1952-SC", "19/52 Single or 2-Core Aluminium", "Aluminium Wire", "19/52 SWG", "Industrial Service Line Cable", "Coil (90m)", 8900.0, 20.0),
+            ("AL-1964-SC", "19/64 Single or 2-Core Aluminium", "Aluminium Wire", "19/64 SWG", "Heavy Power Distribution Cable", "Coil (90m)", 11200.0, 15.0),
+            ("AL-1983-SC", "19/83 Single Core Aluminium", "Aluminium Wire", "19/83 SWG", "High Voltage Transmission Grade Cable", "Coil (90m)", 14500.0, 10.0)
+        ]
+        c.executemany("INSERT OR IGNORE INTO products (code, name, category, gauge, features, unit, unit_price, stock_qty) VALUES (?,?,?,?,?,?,?,?)", prods)
+
+    # Seed Scrap
     c.execute("SELECT COUNT(*) FROM scrap_inventory")
     if c.fetchone()[0] == 0:
         c.executemany("INSERT OR IGNORE INTO scrap_inventory (material_type, stock_kg) VALUES (?,?)", [
@@ -270,7 +340,7 @@ def generate_excel_report():
     return output
 
 # ------------------------------------------------------------------------------------
-# 3. SIDEBAR NAVIGATION & QUICK PRODUCT SELECT
+# 3. SIDEBAR NAVIGATION & QUICK PRODUCT SELECTOR
 # ------------------------------------------------------------------------------------
 st.sidebar.title(f"⚡ {BUSINESS_NAME}")
 
@@ -294,25 +364,25 @@ st.sidebar.subheader("🎯 Quick Product Select")
 all_p = load_data("SELECT code, name FROM products")
 if not all_p.empty:
     prod_map = {f"{row['code']} - {row['name']}": row['code'] for _, row in all_p.iterrows()}
-    sidebar_selected = st.sidebar.selectbox("Choose Product to Order:", ["-- Choose Product --"] + list(prod_map.keys()))
+    sidebar_selected = st.sidebar.selectbox("Jump to Product Order:", ["-- Choose Product --"] + list(prod_map.keys()))
     if sidebar_selected != "-- Choose Product --":
         st.session_state["selected_product"] = prod_map[sidebar_selected]
 
 # ------------------------------------------------------------------------------------
-# MODULE 1: STOREFRONT
+# MODULE 1: STOREFRONT (3D BOX PACKAGING DASHBOARD)
 # ------------------------------------------------------------------------------------
 if nav_choice == "🛍️ Storefront (Place Order)":
-    st.title("🛒 Public Storefront — Product Catalog & Ordering")
-    st.caption("Browse wire & cable specifications, prices, gauge details, and place orders.")
+    st.markdown('<div class="custom-main-title">Coppermils</div>', unsafe_allow_html=True)
+    st.caption("Official Product Storefront & Digital Catalog with Coppermils Packaging")
 
-    df_p = load_data("SELECT code, name, category, gauge, features, unit, unit_price, stock_qty FROM products")
+    df_p = load_data("SELECT code, name, category, gauge, features, unit, unit_price, stock_qty FROM products WHERE stock_qty > 0")
 
     col_cat, col_search = st.columns([1, 2])
     with col_cat:
         categories = ["All Categories"] + list(df_p["category"].unique()) if not df_p.empty else ["All Categories"]
         sel_cat = st.selectbox("Filter Category", categories)
     with col_search:
-        search_term = st.text_input("Search Product Name or Code", "")
+        search_term = st.text_input("Search Product Name or Gauge", "")
 
     filtered_df = df_p.copy()
     if not filtered_df.empty:
@@ -321,34 +391,57 @@ if nav_choice == "🛍️ Storefront (Place Order)":
         if search_term:
             filtered_df = filtered_df[
                 filtered_df["name"].str.contains(search_term, case=False, na=False) |
-                filtered_df["code"].str.contains(search_term, case=False, na=False)
+                filtered_df["code"].str.contains(search_term, case=False, na=False) |
+                filtered_df["gauge"].str.contains(search_term, case=False, na=False)
             ]
 
-    st.subheader("Available Cable & Wire Stock")
+    st.subheader("📦 Official Product Packaging & Stock")
 
     if filtered_df.empty:
-        st.warning("No products found.")
+        st.info("No matching products found.")
     else:
-        # Render clean, visible product cards using Streamlit native containers
-        for idx, row in filtered_df.iterrows():
-            with st.container():
-                st.markdown(f"### 🔌 {row['name']} (`{row['code']}`)")
-                c1, c2, c3 = st.columns([2, 2, 1])
-                with c1:
-                    st.write(f"**Category:** {row['category']}")
-                    st.write(f"**Gauge / Specification:** `{row['gauge'] if row['gauge'] else 'N/A'}`")
-                with c2:
-                    st.write(f"**Price:** {CURRENCY} {row['unit_price']:,.2f} / {row['unit']}")
-                    st.write(f"**In Stock:** {row['stock_qty']} {row['unit']}")
-                with c3:
-                    if st.button(f"🛒 Order {row['code']}", key=f"btn_{row['code']}"):
-                        st.session_state["selected_product"] = row['code']
+        # Render grid of products with 3D Packaging Box design
+        cols = st.columns(2)
+        for idx, row in filtered_df.reset_index(drop=True).iterrows():
+            col_target = cols[idx % 2]
+            with col_target:
+                mat_type = "PURE COPPER" if "Copper" in row['category'] else "HIGH GRADE ALUMINIUM"
+                
+                box_html = f"""
+                <div class="box-card-container">
+                    <div class="package-box">
+                        <div class="package-box-header">
+                            <span>COPPERMILS</span>
+                            <span class="pure-seal">99.99% {mat_type}</span>
+                        </div>
+                        <div class="package-gauge">GAUGE: {row['gauge']}</div>
+                        <div class="package-specs">
+                            • {row['name']}<br>
+                            • {row['features'] if row['features'] else 'PVC Insulated Power Cable'}<br>
+                            • ISO Certified Quality Standard
+                        </div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
+                        <div>
+                            <span class="product-price">{CURRENCY} {row['unit_price']:,.2f}</span>
+                            <span style="font-size: 12px; color: #666666;"> / {row['unit']}</span>
+                        </div>
+                        <div style="color: #4b5563; font-size: 13px;">
+                            Available: <b>{row['stock_qty']}</b>
+                        </div>
+                    </div>
+                </div>
+                """
+                st.markdown(box_html, unsafe_allow_html=True)
+                
+                if st.button(f"🛒 Select {row['code']} for Order", key=f"btn_{row['code']}"):
+                    st.session_state["selected_product"] = row['code']
+                    st.toast(f"Selected {row['code']} in order form below!")
 
-                st.info(f"**Key Features:** {row['features'] if row['features'] else 'Standard Duty Electric Wire'}")
-                st.divider()
+    st.markdown("---")
 
-    # Order Form
-    st.subheader("📝 Place Your Order")
+    # Order Placement Form
+    st.subheader("📝 Order Placement")
     with st.form("public_order_form"):
         prod_codes = list(df_p["code"]) if not df_p.empty else []
         default_index = 0
@@ -404,11 +497,11 @@ if nav_choice == "🛍️ Storefront (Place Order)":
 
                         execute_query("UPDATE products SET stock_qty = stock_qty - ? WHERE code = ?", (f_qty, f_code))
 
-                        st.success(f"🎉 Order placed successfully! Total: {CURRENCY} {tot_amt:,.2f}.")
+                        st.success(f"🎉 Order placed successfully! Total: {CURRENCY} {tot_amt:,.2f}. We will contact you shortly.")
                         st.rerun()
 
 # ------------------------------------------------------------------------------------
-# MODULE 2: PRODUCT CATALOG
+# MODULE 2: FINISHED PRODUCT CATALOG
 # ------------------------------------------------------------------------------------
 elif nav_choice == "📦 Finished Product Catalog":
     st.title("📦 Product Catalog & Spec Manager")
@@ -448,14 +541,14 @@ elif nav_choice == "📦 Finished Product Catalog":
 
     with tab2:
         with st.form("add_product_form"):
-            c_code = st.text_input("Product Code (e.g. CBL-3070)")
+            c_code = st.text_input("Product Code (e.g. CU-0329)")
             c_name = st.text_input("Product Description / Name")
-            c_cat = st.selectbox("Category", ["Building Wire", "Power Cable", "Twin Core", "Industrial", "Control Cable", "Other"])
-            c_gauge = st.text_input("Gauge Specification (e.g. 7/0.029, 3/0.070, 4mm)")
-            c_features = st.text_area("Features (e.g. 99.9% Pure Copper, Heat Resistant PVC)")
+            c_cat = st.selectbox("Category", ["Copper Wire", "Aluminium Wire", "Twin Core", "Power Cable", "Other"])
+            c_gauge = st.text_input("Gauge Specification (e.g. 03/29 SWG, 7/36 SWG)")
+            c_features = st.text_area("Features (e.g. 99.99% Pure Copper, PVC Insulated)")
             c_unit = st.selectbox("Unit of Measure", ["Coil (90m)", "Meter", "Roll", "Km"])
             c_price = st.number_input("Unit Price", min_value=0.0, step=10.0)
-            c_stock = st.number_input("Initial Stock Qty", min_value=0.0, step=10.0)
+            c_stock = st.number_input("Initial Stock Qty", min_value=0.0, step=1.0)
 
             if st.form_submit_button("Add Product"):
                 if not c_code or not c_name:
@@ -490,7 +583,7 @@ elif nav_choice == "🏭 Production Entry":
     prod_options = [f"{row['code']} - {row['name']}" for _, row in df_prods.iterrows()] if not df_prods.empty else []
 
     with st.form("production_entry_form"):
-        st.subheader("1. Staff Details")
+        st.subheader("1. General & Staff Details")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             p_date = st.date_input("Production Date", date.today())
@@ -560,7 +653,7 @@ elif nav_choice == "🏭 Production Entry":
                 if scrap_pvc > 0:
                     execute_query("UPDATE scrap_inventory SET stock_kg = stock_kg + ? WHERE material_type = 'PVC Scrap'", (scrap_pvc,))
 
-                st.success("✅ Production batch logged!")
+                st.success("✅ Production batch successfully logged!")
                 st.rerun()
 
     st.subheader("📜 Recent Production Batches")
@@ -580,7 +673,7 @@ elif nav_choice == "🧱 Raw Material Inventory":
     if not df_raw.empty:
         for idx, row in df_raw.iterrows():
             if row["stock_qty"] <= row["min_threshold"]:
-                st.warning(f"⚠️ Low Stock Alert: {row['item_name']} ({row['category']}) is at {row['stock_qty']} {row['unit']}")
+                st.warning(f"⚠️ Low Stock Alert: {row['item_name']} ({row['category']}) is at {row['stock_qty']} {row['unit']} (Threshold: {row['min_threshold']})")
 
         st.dataframe(df_raw, use_container_width=True)
 
@@ -603,7 +696,7 @@ elif nav_choice == "🧱 Raw Material Inventory":
         with st.form("new_raw_material_form"):
             r_cat = st.selectbox("Material Category", ["Copper", "PVC", "XLPE", "Aluminium", "Other"])
             r_name = st.text_input("Material Description / Name")
-            r_grade = st.text_input("Grade")
+            r_grade = st.text_input("Grade (e.g., Pure, Loose Gauge, China, Insulation, Sheathing)")
             r_unit = st.text_input("Unit of Measure", "Kg")
             r_stock = st.number_input("Initial Stock Qty", min_value=0.0, step=10.0)
             r_thresh = st.number_input("Min Alert Threshold", min_value=0.0, step=10.0)
