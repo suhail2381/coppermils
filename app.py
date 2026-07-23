@@ -2,7 +2,7 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import firebase_admin
-from firebase_admin import credentials, storage
+from firebase_admin import credentials, storage, firestore
 import os
 import io
 import openpyxl
@@ -336,32 +336,23 @@ if not check_password():
 
 # --- 3. FIREBASE INITIALIZATION ---
 if not firebase_admin._apps:
-    import streamlit as st
-import firebase_admin
-from firebase_admin import credentials, firestore
-
-# Initialize Firebase using Streamlit Secrets
-if not firebase_admin._apps:
     try:
-        # Convert Streamlit TOML secrets into a Python dictionary
-        key_dict = dict(st.secrets["firebase"])
-        
-        # Handle newlines in private key if formatted as a single string
-        if "private_key" in key_dict:
-            key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+        if "firebase" in st.secrets:
+            key_dict = dict(st.secrets["firebase"])
+            if "private_key" in key_dict:
+                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
             
-        cred = credentials.Certificate(key_dict)
-        firebase_admin.initialize_app(cred)
+            cred = credentials.Certificate(key_dict)
+            bucket_url = key_dict.get("storage_bucket", "ring-fence-funds.firebasestorage.app")
+            firebase_admin.initialize_app(cred, {"storageBucket": bucket_url})
     except Exception as e:
-        st.error(f"Failed to connect to Firebase: {e}")
+        st.warning(f"Firebase connection skipped/not configured: {e}")
 
-# Connect to Firestore database
-db = firestore.client()
-    firebase_admin.initialize_app(cred, {
-        "storageBucket": "ring-fence-funds.firebasestorage.app"
-    })
+try:
+    bucket = storage.bucket() if firebase_admin._apps else None
+except Exception:
+    bucket = None
 
-bucket = storage.bucket()
 DB_FILE = "professional_funds_distribution.db"
 
 # --- 4. DATA UTILITIES & DATABASE INITIALIZATION ---
@@ -398,13 +389,21 @@ def init_db():
     conn.close()
 
 def sync_db_from_cloud():
-    blob = bucket.blob(DB_FILE)
-    if blob.exists():
-        blob.download_to_filename(DB_FILE)
+    if bucket:
+        try:
+            blob = bucket.blob(DB_FILE)
+            if blob.exists():
+                blob.download_to_filename(DB_FILE)
+        except Exception:
+            pass
 
 def sync_db_to_cloud():
-    blob = bucket.blob(DB_FILE)
-    blob.upload_from_filename(DB_FILE)
+    if bucket:
+        try:
+            blob = bucket.blob(DB_FILE)
+            blob.upload_from_filename(DB_FILE)
+        except Exception:
+            pass
 
 # Sync and verify database structure on startup
 sync_db_from_cloud()
@@ -715,7 +714,7 @@ elif app_mode == "📊 Fund Allocations Matrix":
         st.markdown("<br>", unsafe_allow_html=True)
 
         if not df_active.empty:
-            tab1, tab2, tab3 = st.tabs(["🏛️ Executive Overview", "🌳 Hierarchical Treemap", "📊 Allocation Spread"])
+            tab1, tab2, tab3 = st.tabs(["🏛️ Executive Overview", "🌳 Hierarchical Treemap", "📊 Allocation Matrix Table"])
 
             with tab1:
                 col_chart1, col_chart2 = st.columns([1, 1])
@@ -791,79 +790,51 @@ elif app_mode == "📊 Fund Allocations Matrix":
                     margin=dict(t=20, b=20, l=10, r=10),
                     height=420
                 )
-                fig_tree.update_traces(hovertemplate="<b>%{label}</b><br>Allocated: PKR %{value:,.0f}")
                 st.plotly_chart(fig_tree, use_container_width=True)
 
             with tab3:
-                st.markdown("##### 📊 Financial Distribution Density")
-                fig_hist = px.histogram(
-                    df_active,
-                    x="amount",
-                    nbins=20,
-                    color_discrete_sequence=["#0d6efd"],
-                    labels={"amount": "Allocation Value Ranges (PKR)"},
-                    title="<b>Allocation Size Frequency Histogram</b>"
+                st.markdown("##### 📋 Dynamic Allocation Pivot Matrix")
+                
+                # Pivot Matrix Setup
+                pivot_df = pd.pivot_table(
+                    df,
+                    index=['district_name', 'ddo_code'],
+                    columns='head_code',
+                    values='amount',
+                    aggfunc='sum',
+                    fill_value=0
+                ).reset_index()
+
+                pivot_df.rename(columns={'district_name': 'District', 'ddo_code': 'DDO Code'}, inplace=True)
+                
+                # Calculate Row Totals
+                numeric_cols = [c for c in pivot_df.columns if c not in ['District', 'DDO Code']]
+                pivot_df['Total'] = pivot_df[numeric_cols].sum(axis=1)
+
+                # Append Grand Total Row
+                total_row = {'District': 'GRAND TOTAL', 'DDO Code': ''}
+                for col in numeric_cols + ['Total']:
+                    total_row[col] = pivot_df[col].sum()
+                
+                export_df = pd.concat([pivot_df, pd.DataFrame([total_row])], ignore_index=True)
+
+                st.dataframe(
+                    export_df.style.format({c: "PKR {:,.0f}" for c in numeric_cols + ['Total']}),
+                    use_container_width=True,
+                    height=400
                 )
-                fig_hist.update_layout(
-                    template="plotly_white",
-                    margin=dict(t=50, b=20, l=10, r=10),
-                    height=380,
-                    xaxis_title="Allocation Amount Range (PKR)",
-                    yaxis_title="Count of Entry Records"
-                )
-                st.plotly_chart(fig_hist, use_container_width=True)
 
-        else:
-            st.warning("⚠️ Selected filters yield zero active allocations.")
-
-        st.markdown("---")
-        st.subheader("📊 Fund Allocations Matrix Table")
-
-        df["Head"] = df["head_code"] + "\n" + df["head_description"]
-
-        pivot_df = df.pivot_table(
-            index=["district_name", "ddo_code"],
-            columns="Head",
-            values="amount",
-            aggfunc="sum",
-            fill_value=0
-        )
-
-        pivot_df["Total"] = pivot_df.sum(axis=1)
-        pivot_df = pivot_df.reset_index()
-        pivot_df.rename(columns={"district_name": "District", "ddo_code": "DDO Code"}, inplace=True)
-
-        numeric_cols = [c for c in pivot_df.columns if c not in ["District", "DDO Code"]]
-        total_row = {"District": "Total", "DDO Code": ""}
-        for col in numeric_cols:
-            total_row[col] = pivot_df[col].sum()
-            
-        total_df = pd.DataFrame([total_row])
-        pivot_df = pd.concat([pivot_df, total_df], ignore_index=True)
-
-        column_configuration = {
-            "District": st.column_config.TextColumn("District"),
-            "DDO Code": st.column_config.TextColumn("DDO Code"),
-        }
-        for col in numeric_cols:
-            column_configuration[col] = st.column_config.NumberColumn(
-                col,
-                format="%,.0f"
-            )
-
-        st.dataframe(
-            pivot_df,
-            column_config=column_configuration,
-            use_container_width=True,
-            hide_index=True
-        )
-
-        excel_data = generate_a4_print_excel(pivot_df, start_date, end_date)
-        st.download_button(
-            label="🖨️ Download Print-Ready Excel (A4 Landscape)",
-            data=excel_data,
-            file_name=f"Ring_Fence_Funds_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+                # Export Section
+                st.markdown("---")
+                col_exp1, _ = st.columns([1, 2])
+                with col_exp1:
+                    excel_data = generate_a4_print_excel(export_df, start_date, end_date)
+                    st.download_button(
+                        label="📄 Download A4 Print-Ready Excel Report",
+                        data=excel_data,
+                        file_name=f"Ring_Fence_Funds_Matrix_{start_date}_to_{end_date}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
     else:
-        st.info("No records found for the selected filter criteria.")
+        st.info("ℹ️ No records found matching the specified date range and filter criteria.")
